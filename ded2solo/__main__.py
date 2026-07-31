@@ -107,6 +107,7 @@ def main(argv=None) -> int:
         print(f"  {n:>6}  {label}")
     print(f"\n  {stats['guid_swaps']:>6}  GUID swaps in Level.sav")
     print(f"  {stats['rekeyed']:>6}  character entries re-keyed to {conv.HOST_GUID}")
+    print(f"  {stats['handles']:>6}  guild membership handles repointed to the host")
     print(f"\n  Level.sav written as zlib, save_type=0x{stats['level_save_type']:02x}")
     for src, dst, swaps in stats["players"]:
         note = f"{swaps} GUID swaps" if src != dst else "unchanged"
@@ -125,6 +126,7 @@ def main(argv=None) -> int:
         print(f"  residual old GUID (player) : {v['player_residual_old_guid']}")
         print(f"  character entries          : {v['entries']}")
         print(f"  entries keyed to the host  : {v['host_keyed']}")
+        print(f"  stranded guild handles     : {v['stranded_handles']}  (must be 0)")
         print(f"  host character             : {v['host_name']!r}")
         print(f"  player save PlayerUId      : {v['player_uid']}")
         print(f"  player save links to world : {v['player_linked']}")
@@ -135,6 +137,7 @@ def main(argv=None) -> int:
             and v["host_entries"] == 1
             and v["player_uid"] == conv.HOST_GUID
             and v["player_linked"]
+            and v["stranded_handles"] == 0
         )
         print(f"\n  {'PASS' if ok else 'FAILED'}")
         if not ok:

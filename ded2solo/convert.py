@@ -65,7 +65,9 @@ def read_level(level_path: str):
         raw, _ = decompress_sav_to_gvas(f.read())
 
     offsets: list[int] = []
+    sections: dict[str, tuple[int, int]] = {}
     original = FArchiveReader.prop_value
+    original_property = FArchiveReader.property
 
     def traced(self, type_name, struct_type_name, path):
         if path != _KEY_PATH:
@@ -75,20 +77,32 @@ def read_level(level_path: str):
         offsets.append(start)
         return value
 
+    def traced_property(self, type_name, size, path, nested_caller_path=""):
+        # Record the byte span of each top-level worldSaveData section.
+        top = path.startswith(".worldSaveData.") and path.count(".") == 2
+        if not top:
+            return original_property(self, type_name, size, path, nested_caller_path)
+        start = self.data.tell()
+        value = original_property(self, type_name, size, path, nested_caller_path)
+        sections[path.rsplit(".", 1)[1]] = (start, self.data.tell())
+        return value
+
     FArchiveReader.prop_value = traced
+    FArchiveReader.property = traced_property
     try:
         gvas = GvasFile.read(
             raw, PALWORLD_TYPE_HINTS, PALWORLD_CUSTOM_PROPERTIES, allow_nan=True
         )
     finally:
         FArchiveReader.prop_value = original
+        FArchiveReader.property = original_property
 
     entries = gvas.properties["worldSaveData"]["value"]["CharacterSaveParameterMap"]["value"]
     if len(offsets) != len(entries):
         raise SystemExit(
             f"internal error: traced {len(offsets)} map keys but parsed {len(entries)} entries"
         )
-    return raw, gvas, entries, offsets
+    return raw, gvas, entries, offsets, sections
 
 
 def describe(entry) -> tuple[bool, Optional[str], Optional[str], Optional[int]]:
@@ -111,8 +125,39 @@ def describe(entry) -> tuple[bool, Optional[str], Optional[str], Optional[int]]:
     )
 
 
+def guild_membership(wsd, known_instances: set) -> list[dict]:
+    """Every guild in the world, as {'index', 'members'} of 16-byte instance ids.
+
+    Guild blobs usually fail to decode on current save versions, so members are
+    recovered by scanning the raw blob for {guid, instance_id} handle pairs and
+    keeping the ones whose instance id is a real character. Structurally decoded
+    guilds are read directly.
+    """
+    from palworld_save_tools.archive import UUID
+
+    guilds = []
+    for index, group in enumerate(wsd["GroupSaveDataMap"]["value"]):
+        if group["value"]["GroupType"]["value"]["value"] != "EPalGroupType::Guild":
+            continue
+        rd = group["value"]["RawData"]["value"]
+        members = set()
+        if isinstance(rd, dict) and "individual_character_handle_ids" in rd:
+            for handle in rd["individual_character_handle_ids"]:
+                inst = UUID.from_str(str(handle["instance_id"])).raw_bytes
+                if inst in known_instances:
+                    members.add(inst)
+        elif isinstance(rd, dict) and "values" in rd:
+            blob = bytes(rd["values"])
+            for i in range(0, len(blob) - 32 + 1):
+                inst = blob[i + 16 : i + 32]
+                if inst in known_instances:
+                    members.add(inst)
+        guilds.append({"index": index, "members": members})
+    return guilds
+
+
 def list_characters(world: str) -> list[dict]:
-    _, _, entries, _ = read_level(os.path.join(world, "Level.sav"))
+    _, _, entries, _, _ = read_level(os.path.join(world, "Level.sav"))
     pals = collections.Counter()
     found = []
     for entry in entries:
@@ -156,10 +201,43 @@ def convert(
     os.makedirs(os.path.join(out, "Players"), exist_ok=True)
     stats: dict = {"plan": collections.Counter()}
 
-    raw, gvas, entries, offsets = read_level(os.path.join(world, "Level.sav"))
+    raw, gvas, entries, offsets, sections = read_level(os.path.join(world, "Level.sav"))
+    wsd = gvas.properties["worldSaveData"]["value"]
     buf = bytearray(raw)
 
+    # Index every character by instance id, and find the chosen player's own instance.
+    instances = {}
+    target_instance = None
     names = {}
+    for entry in entries:
+        inst = UUID.from_str(str(entry["key"]["InstanceId"]["value"])).raw_bytes
+        is_player, _, nickname, _ = describe(entry)
+        instances[inst] = is_player
+        if is_player:
+            uid = str(entry["key"]["PlayerUId"]["value"])
+            names[uid] = nickname
+            if uid == player_guid:
+                target_instance = inst
+
+    if player_guid not in names:
+        raise SystemExit(
+            f"No player character with GUID {player_guid} exists in this world.\n"
+            "Run with --list to see the characters it contains."
+        )
+
+    # The set to convert is the chosen player's *guild*, not merely the pals they
+    # own. A guild also holds unowned base-camp workers, and other players' guilds
+    # hold unowned workers of their own that must be left alone.
+    guilds = guild_membership(wsd, set(instances))
+    if absorb_other_players:
+        convert_set = {i for g in guilds for i in g["members"] if not instances[i]}
+    else:
+        convert_set = set()
+        for g in guilds:
+            if target_instance in g["members"]:
+                convert_set |= {i for i in g["members"] if not instances[i]}
+    stats["guild_pals"] = len(convert_set)
+
     rekey_at = []
     for offset, entry in zip(offsets, entries):
         parsed = entry["key"]["PlayerUId"]["value"]
@@ -170,30 +248,18 @@ def convert(
                 f"expects (offset {at}). The save format has probably changed; "
                 "refusing to write anything."
             )
-        is_player, owner, nickname, _ = describe(entry)
-        if is_player:
-            names[str(parsed)] = nickname
+        inst = UUID.from_str(str(entry["key"]["InstanceId"]["value"])).raw_bytes
+        if instances[inst]:
             stats["plan"]["player entry (re-keyed by the GUID swap)"] += 1
             continue
         if str(parsed) != ZERO_GUID:
             stats["plan"]["pal with a non-zero key (left alone)"] += 1
             continue
-        if owner == player_guid or owner is None or absorb_other_players:
+        if inst in convert_set:
             rekey_at.append(at)
-            if owner == player_guid:
-                stats["plan"]["pal owned by the chosen player -> re-keyed"] += 1
-            elif owner is None:
-                stats["plan"]["unowned / base-camp pal -> re-keyed"] += 1
-            else:
-                stats["plan"]["pal owned by another player -> re-keyed (--absorb)"] += 1
+            stats["plan"]["pal in the chosen player's guild -> re-keyed"] += 1
         else:
-            stats["plan"]["pal owned by another player (left zero-keyed)"] += 1
-
-    if player_guid not in names:
-        raise SystemExit(
-            f"No player character with GUID {player_guid} exists in this world.\n"
-            "Run with --list to see the characters it contains."
-        )
+            stats["plan"]["pal in another player's guild (left zero-keyed)"] += 1
 
     # 1) Swap the chosen player's GUID for the local host GUID, everywhere.
     stats["guid_swaps"] = buf.count(old_raw_guid)
@@ -211,6 +277,28 @@ def convert(
             raise SystemExit(f"unexpected key value at offset {at}; refusing to write")
         buf[at : at + 16] = new_raw_guid
     stats["rekeyed"] = len(rekey_at)
+
+    # 3) Point the guild membership handles at the host too. A handle is a
+    #    contiguous {player_uid, instance_id} pair; on a server the player_uid of a
+    #    pal handle is the zero GUID, and locally it is the host GUID. Leaving the
+    #    handle on zero while the map key says host is exactly the inconsistency
+    #    that makes the client delete the pal on load -- the file looks fine, and
+    #    the pals simply never appear.
+    #    One reference is deliberately left alone: the pal's own IndividualId,
+    #    embedded inside its CharacterSaveParameterMap entry. A genuine local save
+    #    keys the entry to the host but keeps that inner player_uid on zero, so
+    #    every pair inside that section is skipped.
+    csp_start, csp_end = sections["CharacterSaveParameterMap"]
+    handles = 0
+    for inst in convert_set:
+        needle = zero_raw_guid + inst
+        j = buf.find(needle)
+        while j != -1:
+            if not (csp_start <= j < csp_end):
+                buf[j : j + 16] = new_raw_guid
+                handles += 1
+            j = buf.find(needle, j + 32)
+    stats["handles"] = handles
 
     if len(buf) != len(raw):
         raise SystemExit("internal error: payload length changed")
@@ -286,10 +374,10 @@ def verify(world: str, out: str, player_guid: str) -> dict:
         "bytes_changed": sum(1 for a, b in zip(new_raw, src_raw) if a != b),
     }
 
-    gvas = GvasFile.read(
-        new_raw, PALWORLD_TYPE_HINTS, PALWORLD_CUSTOM_PROPERTIES, allow_nan=True
+    new_raw, _gvas, entries, _offsets, sections = read_level(
+        os.path.join(out, "Level.sav")
     )
-    entries = gvas.properties["worldSaveData"]["value"]["CharacterSaveParameterMap"]["value"]
+    csp_start, csp_end = sections["CharacterSaveParameterMap"]
     result["entries"] = len(entries)
     host = [
         e
@@ -301,6 +389,24 @@ def verify(world: str, out: str, player_guid: str) -> dict:
     result["host_keyed"] = sum(
         1 for e in entries if str(e["key"]["PlayerUId"]["value"]) == HOST_GUID
     )
+
+    # The defect that silently deletes pals: an entry keyed to the host whose guild
+    # or container reference still carries the zero GUID. References inside
+    # CharacterSaveParameterMap are the pal's own IndividualId and correctly stay
+    # zero, so they do not count.
+    zero_raw = UUID.from_str(ZERO_GUID).raw_bytes
+    stranded = 0
+    for e in entries:
+        if str(e["key"]["PlayerUId"]["value"]) != HOST_GUID or describe(e)[0]:
+            continue
+        inst = UUID.from_str(str(e["key"]["InstanceId"]["value"])).raw_bytes
+        j = new_raw.find(zero_raw + inst)
+        while j != -1:
+            if not (csp_start <= j < csp_end):
+                stranded += 1
+                break
+            j = new_raw.find(zero_raw + inst, j + 32)
+    result["stranded_handles"] = stranded
 
     player_sav = os.path.join(
         out, "Players", guid_to_filename(HOST_GUID) + ".sav"
