@@ -28,18 +28,28 @@ Palworld statically links Oodle, so there is no `oo2core*.dll` in the game insta
 
 Only the *decompressor* is needed: **the game still loads zlib-compressed saves**, so output is written back as plain `PlZ`. Palworld re-writes it in its own format on the first save.
 
-### 2. Pals are keyed differently, and this is the part that eats your pals
+### 2. Pals are referenced differently, and this is the part that eats your pals
 
-`Level.sav`'s `CharacterSaveParameterMap` is keyed by `{PlayerUId, InstanceId}`:
+`Level.sav`'s `CharacterSaveParameterMap` is keyed by `{PlayerUId, InstanceId}`. A local save keys a pal to the **host** GUID `00000000-0000-0000-0000-000000000001`; a dedicated server keys it to the **zero** GUID and records the real owner in `SaveParameter.OwnerPlayerUId`. So the key has to be rewritten.
 
-| | how pals are keyed | how a player character is keyed |
+**That alone is not enough, and getting it half right is worse than not trying.** Each pal is also referenced as a contiguous `{player_uid, instance_id}` pair in several other places, and a local save does *not* use the same GUID in all of them:
+
+| section | local save | dedicated server |
 |---|---|---|
-| **Dedicated server** | the **zero** GUID, with the real owner in `SaveParameter.OwnerPlayerUId` | that player's own GUID |
-| **Local (solo / co-op)** | the **host** GUID `00000000-0000-0000-0000-000000000001` | the host GUID |
+| `CharacterContainerSaveData` | host | zero |
+| `GroupSaveDataMap` (guild handles) | host | zero |
+| `WorkSaveData` | host | zero |
+| `CharacterSaveParameterMap` (the pal's own `IndividualId`) | **zero** | zero |
 
-A local save keys *everything* to the host — the player, their pals, and the unowned base-camp workers alike. Swapping only the player's GUID, which is what the classic host-save-fix does, leaves every pal keyed to zero: they are still in the file, but they do not come back in game.
+Re-key the map entry but leave the guild and container references on zero, and the client decides those pals are unreferenced and **deletes every one of them on the first autosave**. Nothing warns you: the world loads, your character is intact, the pals are simply gone, and the autosave has already overwritten the file.
 
-`ded2solo` does both: the GUID swap **and** the re-key.
+Note the last row. The pal's *own* embedded `IndividualId` stays on the zero GUID even in a genuine local save, so a blanket "replace zero with host" pass is also wrong.
+
+`ded2solo` rewrites exactly the first three and leaves the fourth alone.
+
+### Which pals get converted
+
+The set is the chosen player's **guild membership**, not the pals they personally own. A guild also contains unowned base-camp workers, and other players' guilds contain unowned workers of their own that must be left untouched. Converting by ownership sweeps up the wrong pals.
 
 ## How it edits the file
 
@@ -57,17 +67,24 @@ Every run ends with a check (skip it with `--no-verify`):
 
 ```
   payload length preserved   : True
-  bytes changed vs original  : 29847
+  bytes changed vs original  : 31537
   residual old GUID (level)  : 0
   residual old GUID (player) : 0
   character entries          : 1584
-  entries keyed to the host  : 918
+  entries keyed to the host  : 857
+  stranded guild handles     : 0  (must be 0)
   host character             : 'Brain'
   player save PlayerUId      : 00000000-0000-0000-0000-000000000001
   player save links to world : True
 
   PASS
 ```
+
+`stranded guild handles` is the one that matters most: it counts pals keyed to the host that still have a zero reference outside `CharacterSaveParameterMap`. Any number above zero means those pals will be deleted on load.
+
+## If it goes wrong, stop the game immediately
+
+The client autosaves every few minutes and keeps timestamped copies in `<world>\backup\world\`. If your pals are missing, **quit without letting it save again** — otherwise the backups fill up with the already-broken state. Re-convert from the original server folder rather than from anything the client has written.
 
 ## Don't forget LevelMeta.sav
 
