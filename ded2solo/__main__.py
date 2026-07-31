@@ -52,6 +52,26 @@ alongside your other worlds. Back up your saves first.""",
         help="do not copy the other players' .sav files into the output",
     )
     p.add_argument(
+        "--world-name",
+        help="rename the world as it appears in the game's world list",
+    )
+    p.add_argument(
+        "--settings",
+        help="also transfer the server's world settings: path to its "
+        "PalWorldSettings.ini. Without this the world runs on default rules.",
+    )
+    p.add_argument(
+        "--settings-template",
+        help="a WorldOption.sav to base the settings file on (default: the most "
+        "recent one found under %%LOCALAPPDATA%%\\Pal\\Saved\\SaveGames)",
+    )
+    p.add_argument(
+        "--include-server-fields",
+        action="store_true",
+        help="with --settings, also copy server-only fields (admin password, "
+        "ports, RCON, IP). Skipped by default.",
+    )
+    p.add_argument(
         "--no-verify", action="store_true", help="skip the post-conversion check"
     )
     return p
@@ -116,6 +136,31 @@ def main(argv=None) -> int:
         print("  LevelMeta.sav copied (required, or the world will not be listed)")
     else:
         print("  WARNING: no LevelMeta.sav in the source -- the world will not be listed")
+
+    if args.world_name:
+        old, new = conv.set_world_name(out, args.world_name)
+        print(f"\nWorld name: {old!r} -> {new!r}")
+
+    if args.settings:
+        from . import settings as settings_mod
+
+        r = settings_mod.transfer(
+            args.settings,
+            out,
+            template=args.settings_template,
+            include_server_fields=args.include_server_fields,
+        )
+        print(f"\nSettings from {os.path.basename(args.settings)} "
+              f"(template: {os.path.basename(os.path.dirname(r['template']))}):")
+        print(f"  applied {len(r['applied'])}, {len(r['changed'])} differ from the template")
+        for key, before, after in r["changed"]:
+            print(f"    {key:42s} {str(before):26s} -> {after}")
+        if r["skipped_server"]:
+            print(f"  skipped {len(r['skipped_server'])} server-only fields "
+                  "(use --include-server-fields to copy them)")
+        if r["mismatches"]:
+            print("  FAILED: values did not survive the write")
+            return 1
 
     if not args.no_verify:
         v = conv.verify(world, out, player_guid)

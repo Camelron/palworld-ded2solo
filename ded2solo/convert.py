@@ -125,6 +125,49 @@ def describe(entry) -> tuple[bool, Optional[str], Optional[str], Optional[int]]:
     )
 
 
+def set_world_name(world_folder: str, name: str) -> tuple[str, str]:
+    """Rename the world as shown in the game's world list.
+
+    The name lives in LevelMeta.sav, which -- unlike Level.sav -- round-trips
+    through the parser byte-for-byte, so this is a structural edit. The length
+    change is why it cannot be done by byte patching.
+    """
+    from palworld_save_tools.gvas import GvasFile
+    from palworld_save_tools.palsav import compress_gvas_to_sav, decompress_sav_to_gvas
+    from palworld_save_tools.paltypes import (
+        PALWORLD_CUSTOM_PROPERTIES,
+        PALWORLD_TYPE_HINTS,
+    )
+
+    path = os.path.join(world_folder, "LevelMeta.sav")
+    if not os.path.exists(path):
+        raise SystemExit(f"no LevelMeta.sav in {world_folder}; cannot set the world name")
+    with open(path, "rb") as f:
+        raw, save_type = decompress_sav_to_gvas(f.read())
+    gvas = GvasFile.read(
+        raw, PALWORLD_TYPE_HINTS, PALWORLD_CUSTOM_PROPERTIES, allow_nan=True
+    )
+    if gvas.write(PALWORLD_CUSTOM_PROPERTIES) != raw:
+        raise SystemExit(
+            "LevelMeta.sav does not round-trip losslessly; refusing to rewrite it"
+        )
+    field = gvas.properties["SaveData"]["value"]["WorldName"]
+    previous = field["value"]
+    field["value"] = name
+    with open(path, "wb") as f:
+        f.write(compress_gvas_to_sav(gvas.write(PALWORLD_CUSTOM_PROPERTIES), save_type))
+
+    with open(path, "rb") as f:
+        check, _ = decompress_sav_to_gvas(f.read())
+    reread = GvasFile.read(
+        check, PALWORLD_TYPE_HINTS, PALWORLD_CUSTOM_PROPERTIES, allow_nan=True
+    )
+    got = reread.properties["SaveData"]["value"]["WorldName"]["value"]
+    if got != name:
+        raise SystemExit(f"world name did not stick: wrote {name!r}, read back {got!r}")
+    return previous, name
+
+
 def guild_membership(wsd, known_instances: set) -> list[dict]:
     """Every guild in the world, as {'index', 'members'} of 16-byte instance ids.
 

@@ -14,6 +14,14 @@ python -m ded2solo --world PalServer/Pal/Saved/SaveGames/0/<WORLDID> \
 
 Then copy the output folder into `%LOCALAPPDATA%\Pal\Saved\SaveGames\<SteamID>\`, alongside your existing worlds. **Back up your saves first.**
 
+To carry the server's rules and give the world a proper name at the same time:
+
+```bash
+python -m ded2solo --world <world folder> --player <id> --out <out folder> \
+                   --settings PalServer/Pal/Saved/Config/WindowsServer/PalWorldSettings.ini \
+                   --world-name "Arkologia 1.0"
+```
+
 ---
 
 ## Why the existing tools break
@@ -86,6 +94,20 @@ Every run ends with a check (skip it with `--no-verify`):
 
 The client autosaves every few minutes and keeps timestamped copies in `<world>\backup\world\`. If your pals are missing, **quit without letting it save again** — otherwise the backups fill up with the already-broken state. Re-convert from the original server folder rather than from anything the client has written.
 
+## World settings live somewhere else entirely
+
+A dedicated server keeps its rules in `Saved/Config/WindowsServer/PalWorldSettings.ini`. A local world keeps the same rules in `WorldOption.sav` inside the world folder. Convert the save and nothing else, and your world silently reverts to **default** rules — rates, death penalty, difficulty, base-camp limits, the lot.
+
+`--settings <ini>` transfers them. Every key in the ini's `OptionSettings=(...)` blob has a counterpart field in `WorldOption.sav`, so it is a direct field-by-field copy. The save holds far more fields than the ini does (voice chat, PvP drops, respawn penalties…); those come from a template — any existing local `WorldOption.sav`, auto-discovered, or given with `--settings-template`.
+
+Server infrastructure fields are **skipped by default**: `AdminPassword`, `ServerPassword`, `PublicIP`, `PublicPort`, `RCON*`, `RESTAPI*`, `Region`, `bUseAuth`, `BanListURL`, `ServerName`, `ServerDescription`, `ServerPlayerMaxNum`. They do nothing in a local world, and the admin password in particular should not ride along inside a save file you might share. `--include-server-fields` copies them anyway.
+
+Unlike `Level.sav`, both `WorldOption.sav` and `LevelMeta.sav` round-trip through the parser byte-for-byte, so these two are edited structurally and verified by reading back every value that was written.
+
+## Renaming the world
+
+A converted server world shows up in the world list under whatever the server called its autosave — usually something like `Autosave_W`. `--world-name "My World"` rewrites `WorldName` in `LevelMeta.sav`.
+
 ## Don't forget LevelMeta.sav
 
 `LevelMeta.sav` holds `WorldName` and `InGameDay`. Converters routinely do not emit it, and **without it the world does not appear in the game's world list at all** — a confusing failure, because the save itself is perfectly fine. `ded2solo` copies it across automatically.
@@ -113,7 +135,17 @@ The client autosaves every few minutes and keeps timestamped copies in `<world>\
 | `--out` | output folder; must be empty and outside `--world` |
 | `--absorb-other-players` | also re-key other players' pals to the host. Off by default |
 | `--drop-other-players` | do not copy the other players' `.sav` files |
+| `--world-name` | rename the world as shown in the world list |
+| `--settings` | transfer world rules from the server's `PalWorldSettings.ini` |
+| `--settings-template` | base the settings file on a specific `WorldOption.sav` |
+| `--include-server-fields` | with `--settings`, also copy passwords/ports/RCON/IP |
 | `--no-verify` | skip the post-conversion check |
+
+The settings transfer also runs standalone against a world folder you already installed:
+
+```bash
+python -m ded2solo.settings --ini <PalWorldSettings.ini> --world-folder <world folder>
+```
 
 ### About the other players
 
