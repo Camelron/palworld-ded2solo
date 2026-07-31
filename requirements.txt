@@ -1,0 +1,2 @@
+# Installed into ./vendor by setup_env.py, not into your global environment.
+palworld-save-tools==0.24.0

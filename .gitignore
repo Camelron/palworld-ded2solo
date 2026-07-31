@@ -1,0 +1,6 @@
+vendor/
+converted/
+__pycache__/
+*.pyc
+*.zip
+.env
