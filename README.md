@@ -14,12 +14,24 @@ python -m ded2solo --world PalServer/Pal/Saved/SaveGames/0/<WORLDID> \
 
 Then copy the output folder into `%LOCALAPPDATA%\Pal\Saved\SaveGames\<SteamID>\`, alongside your existing worlds. **Back up your saves first.**
 
+For a step-by-step dedicated-server to local save checklist, including
+map/exploration progress and guild/base cleanup notes, see
+[SERVER_TO_LOCAL.md](SERVER_TO_LOCAL.md).
+
 To carry the server's rules and give the world a proper name at the same time:
 
 ```bash
 python -m ded2solo --world <world folder> --player <id> --out <out folder> \
                    --settings PalServer/Pal/Saved/Config/WindowsServer/PalWorldSettings.ini \
                    --world-name "Arkologia 1.0"
+```
+
+To carry map/exploration progress from an existing local cache for the same
+server world, pass its `LocalData.sav`:
+
+```bash
+python -m ded2solo --world <server world folder> --player <id> --out <out folder> \
+                   --local-data "%LOCALAPPDATA%\Pal\Saved\SaveGames\<SteamID>\<WORLDID>\LocalData.sav"
 ```
 
 ---
@@ -124,7 +136,9 @@ A converted server world shows up in the world list under whatever the server ca
     <other server players>.sav                 copied unchanged, inert in solo play
 ```
 
-`LocalData.sav` is per-installation; if your local world folder already has one, keep it.
+`LocalData.sav` is per-installation. Use `--local-data` to copy it when you
+have a local cache for the same server world and want to keep map/exploration
+progress.
 
 ## Options
 
@@ -133,9 +147,11 @@ A converted server world shows up in the world list under whatever the server ca
 | `--list` | list the characters in the world (id, name, level, pal count) and exit |
 | `--player` | the character to become the host — a 32-char id, a `Players/<id>.sav` filename, or a dashed GUID |
 | `--out` | output folder; must be empty and outside `--world` |
+| `--list-guilds` | list guilds, members, base IDs, and Palbox map-object IDs |
 | `--absorb-other-players` | also re-key other players' pals to the host. Off by default |
 | `--drop-other-players` | do not copy the other players' `.sav` files |
 | `--world-name` | rename the world as shown in the world list |
+| `--local-data` | copy map/exploration progress from `LocalData.sav` or a world folder containing it |
 | `--settings` | transfer world rules from the server's `PalWorldSettings.ini` |
 | `--settings-template` | base the settings file on a specific `WorldOption.sav` |
 | `--include-server-fields` | with `--settings`, also copy passwords/ports/RCON/IP |

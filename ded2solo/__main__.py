@@ -40,6 +40,11 @@ alongside your other worlds. Back up your saves first.""",
         help="list the characters in the world and exit",
     )
     p.add_argument(
+        "--list-guilds",
+        action="store_true",
+        help="list guilds, members, and base ids in the world and exit",
+    )
+    p.add_argument(
         "--absorb-other-players",
         action="store_true",
         help="also re-key other players' pals to the host. Off by default: those "
@@ -54,6 +59,11 @@ alongside your other worlds. Back up your saves first.""",
     p.add_argument(
         "--world-name",
         help="rename the world as it appears in the game's world list",
+    )
+    p.add_argument(
+        "--local-data",
+        help="copy map/exploration progress from LocalData.sav, or from a local "
+        "world folder containing LocalData.sav",
     )
     p.add_argument(
         "--settings",
@@ -99,13 +109,42 @@ def main(argv=None) -> int:
         print("\nRe-run with --player <id> --out <folder> to convert one of them.")
         return 0
 
+    player_guid = None
+    if args.player:
+        try:
+            player_guid = conv.filename_to_guid(args.player)
+        except ValueError:
+            player_guid = args.player.lower()
+
+    if args.list_guilds:
+        print(f"Guilds in {args.world}:\n")
+        for g in conv.list_guilds(args.world, player_guid):
+            marker = " *" if g["contains_selected_player"] else ""
+            print(
+                f"  [{g['index']}] {g['name']}{marker}: "
+                f"{len(g['members'])} player(s), {len(g['base_ids'])} base(s)"
+            )
+            if g["id"]:
+                print(f"      guild id: {g['id']}")
+            for member in g["members"]:
+                print(
+                    f"      {conv.guid_to_filename(member['guid']):34s} "
+                    f"{str(member['name']):20s} level={member['level']}"
+                )
+            if g["base_ids"]:
+                print("      base ids:")
+                for base_id in g["base_ids"]:
+                    print(f"        {base_id}")
+            if g["base_point_ids"]:
+                print("      palbox map object ids:")
+                for point_id in g["base_point_ids"]:
+                    print(f"        {point_id}")
+        if player_guid:
+            print("\n  * contains the selected player")
+        return 0
+
     if not args.player or not args.out:
         raise SystemExit("--player and --out are required (or use --list)")
-
-    try:
-        player_guid = conv.filename_to_guid(args.player)
-    except ValueError:
-        player_guid = args.player.lower()
 
     world = os.path.abspath(args.world)
     out = os.path.abspath(args.out)
@@ -120,6 +159,7 @@ def main(argv=None) -> int:
         out,
         absorb_other_players=args.absorb_other_players,
         keep_other_player_files=not args.drop_other_players,
+        local_data=args.local_data,
     )
 
     print(f"\nConverted {stats['player_name']!r} ({player_guid}) to the local host.\n")
@@ -136,6 +176,8 @@ def main(argv=None) -> int:
         print("  LevelMeta.sav copied (required, or the world will not be listed)")
     else:
         print("  WARNING: no LevelMeta.sav in the source -- the world will not be listed")
+    if stats["localdata"]:
+        print(f"  LocalData.sav copied from {stats['localdata']} (map/exploration progress)")
 
     if args.world_name:
         old, new = conv.set_world_name(out, args.world_name)

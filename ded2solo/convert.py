@@ -220,12 +220,122 @@ def list_characters(world: str) -> list[dict]:
     return found
 
 
+def list_guilds(world: str, player_guid: Optional[str] = None) -> list[dict]:
+    _raw, gvas, entries, _offsets, _sections = read_level(
+        os.path.join(world, "Level.sav")
+    )
+    wsd = gvas.properties["worldSaveData"]["value"]
+    from palworld_save_tools.archive import UUID
+
+    def group_id_of(raw_data) -> Optional[str]:
+        if not isinstance(raw_data, dict):
+            return None
+        if "group_id" in raw_data:
+            return str(raw_data["group_id"])
+        values = raw_data.get("values")
+        if values and len(values) >= 16:
+            return str(UUID(bytes(values[:16])))
+        return None
+
+    base_camps_by_group = collections.defaultdict(list)
+    for base in wsd["BaseCampSaveData"]["value"]:
+        rd = base["value"]["RawData"]["value"]
+        if not isinstance(rd, dict) or "values" in rd:
+            continue
+        group_id = str(rd["group_id_belong_to"])
+        base_camps_by_group[group_id].append(
+            {
+                "base_id": str(base["key"]),
+                "base_point_id": str(rd["owner_map_object_instance_id"]),
+            }
+        )
+
+    instances = {}
+    names = {}
+    for entry in entries:
+        inst = str(entry["key"]["InstanceId"]["value"])
+        is_player, _owner, nickname, level = describe(entry)
+        instances[inst] = is_player
+        if is_player:
+            uid = str(entry["key"]["PlayerUId"]["value"])
+            names[inst] = {
+                "guid": uid,
+                "name": nickname,
+                "level": level,
+            }
+
+    guilds = []
+    known_instances = {
+        UUID.from_str(str(entry["key"]["InstanceId"]["value"])).raw_bytes: str(
+            entry["key"]["InstanceId"]["value"]
+        )
+        for entry in entries
+    }
+    raw_memberships = guild_membership(wsd, set(known_instances))
+    groups = wsd["GroupSaveDataMap"]["value"]
+    for raw_membership in raw_memberships:
+        index = raw_membership["index"]
+        group = groups[index] if index < len(groups) else None
+        raw_data = group["value"]["RawData"]["value"] if group is not None else {}
+        group_id = group_id_of(raw_data)
+        members = []
+        contains_selected_player = False
+        for raw_inst in raw_membership["members"]:
+            inst = known_instances.get(raw_inst)
+            player = names.get(inst)
+            if player:
+                members.append(player)
+                if player_guid is not None and player["guid"] == player_guid:
+                    contains_selected_player = True
+        base_ids = []
+        base_point_ids = []
+        guild_name = None
+        if group_id is not None:
+            base_ids = [b["base_id"] for b in base_camps_by_group[group_id]]
+            base_point_ids = [
+                b["base_point_id"] for b in base_camps_by_group[group_id]
+            ]
+        if isinstance(raw_data, dict) and "values" not in raw_data:
+            guild_name = raw_data.get("guild_name") or raw_data.get("group_name")
+            base_ids = base_ids or [str(i) for i in raw_data.get("base_ids", [])]
+            base_point_ids = base_point_ids or [
+                str(i)
+                for i in raw_data.get(
+                    "map_object_instance_ids_base_camp_points", []
+                )
+            ]
+        guilds.append(
+            {
+                "index": index,
+                "id": group_id,
+                "name": guild_name or "(unnamed guild)",
+                "members": sorted(members, key=lambda p: (str(p["name"]), p["guid"])),
+                "base_ids": base_ids,
+                "base_point_ids": base_point_ids,
+                "contains_selected_player": contains_selected_player,
+            }
+        )
+    return guilds
+
+
+def resolve_local_data(path: str) -> str:
+    local_data = os.path.join(path, "LocalData.sav") if os.path.isdir(path) else path
+    if not os.path.exists(local_data):
+        raise SystemExit(f"--local-data does not exist: {local_data}")
+    if os.path.basename(local_data).lower() != "localdata.sav":
+        raise SystemExit(
+            "--local-data must point at LocalData.sav or a world folder containing it"
+        )
+    return local_data
+
+
 def convert(
     world: str,
     player_guid: str,
     out: str,
     absorb_other_players: bool = False,
     keep_other_player_files: bool = True,
+    local_data: Optional[str] = None,
 ) -> dict:
     from palworld_save_tools.archive import UUID
     from palworld_save_tools.gvas import GvasFile
@@ -388,9 +498,15 @@ def convert(
     else:
         stats["levelmeta"] = False
 
-    local_data = os.path.join(world, "LocalData.sav")
-    if os.path.exists(local_data):
-        shutil.copy2(local_data, os.path.join(out, "LocalData.sav"))
+    stats["localdata"] = None
+    local_data_src = (
+        resolve_local_data(local_data)
+        if local_data
+        else os.path.join(world, "LocalData.sav")
+    )
+    if os.path.exists(local_data_src):
+        shutil.copy2(local_data_src, os.path.join(out, "LocalData.sav"))
+        stats["localdata"] = local_data_src
 
     return stats
 
